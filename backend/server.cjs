@@ -1,8 +1,32 @@
 const express = require('express');
 const cors = require('cors');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
+
+// Load environment variables from .env file if it exists
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const envConfig = fs.readFileSync(envPath, 'utf-8');
+    envConfig.split(/\r?\n/).forEach(line => {
+      const parts = line.split('=');
+      if (parts.length >= 2) {
+        const key = parts[0].trim();
+        const val = parts.slice(1).join('=').trim().replace(/^['"]|['"]$/g, '');
+        if (key && !key.startsWith('#')) {
+          process.env[key] = val;
+        }
+      }
+    });
+  }
+} catch (e) {
+  console.error('Error loading .env file:', e);
+}
+
 const db = require('./db.cjs');
 const { generateServerArticles } = require('./serverDataGenerator.cjs');
+const sentiment = require('./sentiment.cjs');
 
 const app = express();
 const PORT = 5000;
@@ -438,6 +462,21 @@ app.get('/api/admin/stats', async (req, res) => {
   } catch (error) {
     console.error('Error fetching admin stats:', error);
     res.status(500).json({ error: 'Failed to fetch admin statistics' });
+  }
+});
+
+app.post('/api/comments/sentiment', async (req, res) => {
+  const { commentText } = req.body;
+  if (!commentText) {
+    return res.status(400).json({ error: 'Textul comentariului este necesar' });
+  }
+
+  try {
+    const result = await sentiment.analyzeSentiment(commentText);
+    res.json(result);
+  } catch (error) {
+    console.error('Error analyzing sentiment:', error);
+    res.status(500).json({ error: 'Failed to analyze sentiment' });
   }
 });
 

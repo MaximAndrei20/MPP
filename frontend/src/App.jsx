@@ -40,6 +40,7 @@ function App() {
   const [draggedIndex, setDraggedIndex] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const [showStats, setShowStats] = useState(false);
+  const [reviewSentiments, setReviewSentiments] = useState({});
 
   // Review Form State (Normal User)
   const [reviewer, setReviewer] = useState("");
@@ -444,6 +445,47 @@ function App() {
         setComment("");
       })
       .catch(err => console.error(err));
+  };
+
+  const handleAnalyzeSentiment = (reviewId, text) => {
+    if (!text) return;
+    
+    setReviewSentiments(prev => ({
+      ...prev,
+      [reviewId]: { loading: true }
+    }));
+
+    fetch('/api/comments/sentiment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ commentText: text })
+    })
+      .then(async res => {
+        let data;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await res.json();
+        }
+        if (!res.ok) {
+          throw new Error((data && data.error) || `Eroare server (${res.status})`);
+        }
+        return data;
+      })
+      .then(data => {
+        setReviewSentiments(prev => ({
+          ...prev,
+          [reviewId]: { score: data.score, label: data.label, loading: false }
+        }));
+      })
+      .catch(err => {
+        console.error("Error analyzing sentiment:", err);
+        setReviewSentiments(prev => ({
+          ...prev,
+          [reviewId]: { error: err.message, loading: false }
+        }));
+      });
   };
 
   const handleDeleteArticle = () => {
@@ -1196,6 +1238,90 @@ function App() {
                           <span className="review-sentiment">{review.sentiment}</span>
                         </div>
                         <p className="review-comment">"{review.comment}"</p>
+                        
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem', paddingTop: '0.4rem', borderTop: '1px dashed rgba(255,255,255,0.08)' }}>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Analiză Sentiment</span>
+                          
+                          {/* Sentiment Result / Button */}
+                          {(() => {
+                            const res = reviewSentiments[review.id];
+                            if (!res) {
+                              return (
+                                <button 
+                                  onClick={() => handleAnalyzeSentiment(review.id, review.comment)}
+                                  className="sentiment-btn"
+                                  style={{
+                                    backgroundColor: 'var(--bg-tertiary)',
+                                    color: 'var(--text-secondary)',
+                                    border: '1px solid var(--border-color)',
+                                    borderRadius: '12px',
+                                    padding: '0.2rem 0.6rem',
+                                    fontSize: '0.7rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.2rem',
+                                    transition: 'all 0.2s ease'
+                                  }}
+                                  title="Analizează starea emoțională a textului"
+                                >
+                                  Analizează
+                                </button>
+                              );
+                            }
+                            if (res.loading) {
+                              return (
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  [ Se analizează... ]
+                                </span>
+                              );
+                            }
+                            if (res.error) {
+                              return (
+                                <span style={{ fontSize: '0.7rem', color: '#ef4444' }} title={res.error}>
+                                  Eroare analiză
+                                </span>
+                              );
+                            }
+                            
+                            // Badge based on label
+                            let labelText = "Neutru";
+                            let color = 'var(--color-yellow)';
+                            let bg = 'rgba(245, 158, 11, 0.1)';
+                            let emoji = '🟡';
+                            if (res.label === 'positive') {
+                              labelText = "Pozitiv";
+                              color = 'var(--color-teal)';
+                              bg = 'rgba(20, 184, 166, 0.1)';
+                              emoji = '🟢';
+                            } else if (res.label === 'negative') {
+                              labelText = "Negativ";
+                              color = '#ef4444';
+                              bg = 'rgba(239, 68, 68, 0.1)';
+                              emoji = '🔴';
+                            }
+
+                            return (
+                              <span 
+                                style={{
+                                  backgroundColor: bg,
+                                  color: color,
+                                  padding: '0.15rem 0.5rem',
+                                  borderRadius: '12px',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 'bold',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.25rem',
+                                  border: `1px solid ${color}40`,
+                                }}
+                              >
+                                <span>{emoji}</span>
+                                <span>{labelText} ({res.score > 0 ? `+${res.score}` : res.score})</span>
+                              </span>
+                            );
+                          })()}
+                        </div>
                       </div>
                     ))}
                   </div>

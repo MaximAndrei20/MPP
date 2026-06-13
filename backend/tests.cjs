@@ -302,4 +302,23 @@ test('Database & Collaboration Test Suite', async (t) => {
     await db.deleteArticle(articleId);
   });
 
+  await t.test('9. Sentiment Analysis (Local Fallback)', async () => {
+    const sentiment = require('./sentiment.cjs');
+    
+    // Positive text
+    const posResult = sentiment.localAnalyze('Articolul este absolut minunat si excelent.');
+    assert.strictEqual(posResult.label, 'positive');
+    assert.ok(posResult.score > 0);
+    
+    // Negative text
+    const negResult = sentiment.localAnalyze('Textul are o eroare si este foarte slab si prost.');
+    assert.strictEqual(negResult.label, 'negative');
+    assert.ok(negResult.score < 0);
+    
+    // Neutral text
+    const neuResult = sentiment.localAnalyze('Aceasta este o fraza fara cuvinte cheie.');
+    assert.strictEqual(neuResult.label, 'neutral');
+    assert.strictEqual(neuResult.score, 0);
+  });
+
 });
