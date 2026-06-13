@@ -323,9 +323,12 @@ app.post('/api/articles/:id/publish', async (req, res) => {
 });
 
 app.post('/api/articles/:id/comments', async (req, res) => {
-  const { commentText, username } = req.body;
+  const { commentText, username, paragraphIdx } = req.body;
   if (!commentText || !commentText.trim()) {
     return res.status(400).json({ error: 'Comment text is required' });
+  }
+  if (paragraphIdx === undefined || paragraphIdx === null || isNaN(Number(paragraphIdx))) {
+    return res.status(400).json({ error: 'paragraphIdx is required to comment on a paragraph' });
   }
 
   try {
@@ -343,7 +346,7 @@ app.post('/api/articles/:id/comments', async (req, res) => {
       return res.status(403).json({ error: 'Nu ești autorizat să comentezi la acest articol' });
     }
 
-    const comment = await db.addEditorialComment(req.params.id, user.id, commentText.trim());
+    const comment = await db.addEditorialComment(req.params.id, user.id, commentText.trim(), Number(paragraphIdx));
     res.status(201).json(comment);
   } catch (error) {
     console.error('Error adding editorial comment:', error);

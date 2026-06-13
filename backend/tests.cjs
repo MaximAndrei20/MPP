@@ -111,10 +111,11 @@ test('Database & Collaboration Test Suite', async (t) => {
     assert.strictEqual(detailsWithImg.articleImages[0].placeholder, 'CSS image representing perspiration test');
 
     // 4.6 Add editorial comment
-    await db.addEditorialComment(articleId, editor.id, 'Good draft, please write more.');
+    await db.addEditorialComment(articleId, editor.id, 'Good draft, please write more.', 0);
     const detailsWithComment = await db.getArticleById(articleId);
     assert.strictEqual(detailsWithComment.editorialComments.length, 1);
     assert.strictEqual(detailsWithComment.editorialComments[0].commentText, 'Good draft, please write more.');
+    assert.strictEqual(detailsWithComment.editorialComments[0].paragraphIdx, 0);
 
     // 4.7 Finalize article
     await db.finalizeArticle(articleId);

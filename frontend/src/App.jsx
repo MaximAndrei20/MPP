@@ -33,6 +33,8 @@ function App() {
 
   // Comment state for Editors
   const [editorialComment, setEditorialComment] = useState("");
+  const [activeCommentParagraphIdx, setActiveCommentParagraphIdx] = useState(null);
+  const [viewingCommentsIdx, setViewingCommentsIdx] = useState(null);
 
   // Review Form State (Normal User)
   const [reviewer, setReviewer] = useState("");
@@ -298,20 +300,24 @@ function App() {
   };
 
   // Editor updates
-  const handleAddEditorialComment = (e) => {
-    e.preventDefault();
-    if (!editorialComment.trim()) return;
+  const handleAddParagraphComment = (paragraphIdx, text) => {
+    if (!text.trim()) return;
 
     fetch(`/api/articles/${selectedId}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ commentText: editorialComment, username: currentUser.username })
+      body: JSON.stringify({ 
+        commentText: text, 
+        username: currentUser.username,
+        paragraphIdx: paragraphIdx
+      })
     })
       .then(async res => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         fetchArticleDetails();
         setEditorialComment("");
+        setActiveCommentParagraphIdx(null);
       })
       .catch(err => alert(err.message));
   };
@@ -653,9 +659,159 @@ function App() {
               {/* Show Paragraphs */}
               <div className="article-body">
                 {selectedArticle.paragraphs && selectedArticle.paragraphs.length > 0 ? (
-                  selectedArticle.paragraphs.map((p, idx) => (
-                    <p key={idx}>{p}</p>
-                  ))
+                  selectedArticle.paragraphs.map((p, idx) => {
+                    const pComments = (selectedArticle.editorialComments || []).filter(c => c.paragraphIdx === idx);
+                    const isCommented = pComments.length > 0;
+                    const canComment = currentUser.role === 'editor' && selectedArticle.status !== 'published';
+
+                    return (
+                      <div 
+                        key={idx} 
+                        className={`article-paragraph-wrapper ${isCommented ? 'has-comments' : ''}`}
+                        style={{
+                          position: 'relative',
+                          padding: '0.8rem 1rem',
+                          margin: '0.5rem -1rem',
+                          borderRadius: '6px',
+                          backgroundColor: isCommented ? 'rgba(234, 179, 8, 0.05)' : 'transparent',
+                          borderLeft: isCommented ? '4px solid var(--color-yellow)' : '4px solid transparent',
+                          transition: 'all 0.2s ease',
+                          cursor: canComment ? 'pointer' : 'default',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.4rem'
+                        }}
+                        title={canComment ? "Apasă pentru a adăuga un comentariu editorial" : ""}
+                        onClick={() => {
+                          if (canComment) {
+                            setActiveCommentParagraphIdx(activeCommentParagraphIdx === idx ? null : idx);
+                            setViewingCommentsIdx(null);
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '1rem' }}>
+                          <p style={{ margin: 0, flex: 1, lineHeight: '1.6' }}>{p}</p>
+                          
+                          {isCommented && (
+                            <button 
+                              className="paragraph-comments-indicator"
+                              style={{
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.2rem',
+                                backgroundColor: 'var(--color-yellow)',
+                                color: '#1e293b',
+                                border: 'none',
+                                padding: '0.2rem 0.5rem',
+                                borderRadius: '12px',
+                                fontSize: '0.75rem',
+                                fontWeight: 'bold',
+                                alignSelf: 'center',
+                                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingCommentsIdx(viewingCommentsIdx === idx ? null : idx);
+                                setActiveCommentParagraphIdx(null);
+                              }}
+                              title="Vezi comentariile"
+                            >
+                              <MessageSquare style={{ width: '12px', height: '12px' }} />
+                              {pComments.length}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Inline form to add comment (Editor only) */}
+                        {activeCommentParagraphIdx === idx && (
+                          <div 
+                            style={{
+                              marginTop: '0.5rem',
+                              padding: '0.8rem',
+                              backgroundColor: 'var(--bg-sidebar)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '6px'
+                            }}
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                              <label style={{ fontSize: '0.8rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>
+                                Adaugă comentariu editorial la acest paragraf:
+                              </label>
+                              <textarea
+                                required
+                                rows={2}
+                                placeholder="Scrie feedback sau sugestii de corectură..."
+                                value={editorialComment}
+                                onChange={e => setEditorialComment(e.target.value)}
+                                className="form-textarea"
+                                style={{ width: '100%', fontSize: '0.85rem', padding: '0.4rem', borderRadius: '4px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', color: 'var(--text-primary)' }}
+                              />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                              <button 
+                                type="button" 
+                                onClick={() => {
+                                  setActiveCommentParagraphIdx(null);
+                                  setEditorialComment("");
+                                }}
+                                className="submit-btn"
+                                style={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
+                              >
+                                Anulează
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={() => handleAddParagraphComment(idx, editorialComment)}
+                                className="submit-btn"
+                                style={{ backgroundColor: 'var(--color-yellow)', color: '#1e293b', padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
+                              >
+                                Trimite Comentariu
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Inline comments list popover */}
+                        {viewingCommentsIdx === idx && (
+                          <div 
+                            style={{
+                              marginTop: '0.5rem',
+                              padding: '0.8rem',
+                              backgroundColor: 'var(--bg-sidebar)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '6px',
+                              fontSize: '0.85rem',
+                              boxShadow: '0 4px 6px rgba(0,0,0,0.05)'
+                            }}
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.3rem' }}>
+                              <strong style={{ color: 'var(--color-yellow)' }}>Sugestii Editoriale ({pComments.length})</strong>
+                              <button 
+                                onClick={() => setViewingCommentsIdx(null)}
+                                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.8rem' }}
+                              >
+                                Închide
+                              </button>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                              {pComments.map(c => (
+                                <div key={c.id} style={{ borderLeft: '2px solid var(--color-yellow)', paddingLeft: '0.6rem' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                    <strong>{c.editorName}</strong>
+                                    <span>{c.date}</span>
+                                  </div>
+                                  <div style={{ marginTop: '0.2rem', color: 'var(--text-primary)' }}>{c.commentText}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 ) : (
                   <p style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>Niciun paragraf scris încă. Jurnaliștii asociați trebuie să adauge text.</p>
                 )}
@@ -710,45 +866,7 @@ function App() {
                 </>
               ) : null}
 
-              {/* Editorial Feedback Comments (Only visible to Editors and assigned Journalists) */}
-              {(currentUser.role === 'editor' || selectedArticle.assignedJournalistIds.includes(currentUser.username) || articles.some(a => a.id === selectedArticle.id && a.author.name.includes(currentUser.username))) && (
-                <div className="editorial-feedback-box">
-                  <h3>Sugestii Editoriale / Feedback Intern</h3>
-                  
-                  {/* Editor comment input form */}
-                  {currentUser.role === 'editor' && selectedArticle.status === 'pending' && (
-                    <form onSubmit={handleAddEditorialComment} className="editorial-comment-form">
-                      <textarea
-                        required
-                        placeholder="Adaugă recomandări sau modificări necesare pentru jurnaliști..."
-                        value={editorialComment}
-                        onChange={e => setEditorialComment(e.target.value)}
-                        className="form-textarea"
-                      />
-                      <button type="submit" className="submit-btn" style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        <Send style={{ width: '12px', height: '12px' }} /> Comentează
-                      </button>
-                    </form>
-                  )}
 
-                  {/* Comments list */}
-                  <div className="editorial-comments-list">
-                    {selectedArticle.editorialComments && selectedArticle.editorialComments.length > 0 ? (
-                      selectedArticle.editorialComments.map(c => (
-                        <div key={c.id} className="editorial-comment-card">
-                          <div className="comment-header">
-                            <strong>{c.editorName} (Editor)</strong>
-                            <span>{c.date}</span>
-                          </div>
-                          <p className="comment-text">"{c.commentText}"</p>
-                        </div>
-                      ))
-                    ) : (
-                      <p style={{ fontStyle: 'italic', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Niciun feedback oferit încă.</p>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {/* Journalist Edit Actions (Only for assigned journalist and status 'pending') */}
               {currentUser.role === 'journalist' && 

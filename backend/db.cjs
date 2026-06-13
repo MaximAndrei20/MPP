@@ -151,10 +151,15 @@ async function initSqliteSchema() {
       editor_id TEXT,
       comment_text TEXT,
       date TEXT,
+      paragraph_idx INTEGER,
       FOREIGN KEY(article_id) REFERENCES articles(id),
       FOREIGN KEY(editor_id) REFERENCES users(id)
     )
   `);
+
+  try {
+    await runQuery("ALTER TABLE editorial_comments ADD COLUMN paragraph_idx INTEGER");
+  } catch (e) { /* already exists */ }
 }
 
 module.exports = {
@@ -362,7 +367,8 @@ module.exports = {
           editorId: c.editor_id,
           editorName: c.editor_name,
           commentText: c.comment_text,
-          date: c.date
+          date: c.date,
+          paragraphIdx: c.paragraph_idx
         })),
         assignedJournalistIds: journalists.map(j => j.id)
       };
@@ -398,7 +404,14 @@ module.exports = {
             data: null
           };
         }),
-        editorialComments: art.editorialComments || [],
+        editorialComments: (art.editorialComments || []).map(c => ({
+          id: c.id,
+          editorId: c.editorId,
+          editorName: c.editorName,
+          commentText: c.commentText,
+          date: c.date,
+          paragraphIdx: c.paragraphIdx !== undefined ? c.paragraphIdx : null
+        })),
         assignedJournalistIds: art.journalistIds || [],
         author: {
           name: authorNames,
@@ -636,13 +649,13 @@ module.exports = {
     }
   },
 
-  async addEditorialComment(articleId, editorId, commentText) {
+  async addEditorialComment(articleId, editorId, commentText, paragraphIdx) {
     const dateStr = new Date().toLocaleDateString('ro-RO', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     if (dbType === 'sqlite') {
       const result = await runQuery(`
-        INSERT INTO editorial_comments (article_id, editor_id, comment_text, date)
-        VALUES (?, ?, ?, ?)
-      `, [articleId, editorId, commentText, dateStr]);
+        INSERT INTO editorial_comments (article_id, editor_id, comment_text, date, paragraph_idx)
+        VALUES (?, ?, ?, ?, ?)
+      `, [articleId, editorId, commentText, dateStr, paragraphIdx]);
       
       const user = await getQuery("SELECT username FROM users WHERE id = ?", [editorId]);
       return {
@@ -651,7 +664,8 @@ module.exports = {
         editorId,
         editorName: user ? user.username : 'Editor',
         commentText,
-        date: dateStr
+        date: dateStr,
+        paragraphIdx
       };
     } else {
       const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
@@ -666,7 +680,8 @@ module.exports = {
           editorId,
           editorName,
           commentText,
-          date: dateStr
+          date: dateStr,
+          paragraphIdx
         };
         data[artIdx].editorialComments.unshift(newComment);
         fs.writeFileSync(jsonFilePath, JSON.stringify(data, null, 2), 'utf-8');
