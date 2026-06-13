@@ -160,6 +160,17 @@ async function initSqliteSchema() {
   try {
     await runQuery("ALTER TABLE editorial_comments ADD COLUMN paragraph_idx INTEGER");
   } catch (e) { /* already exists */ }
+
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS article_reactions (
+      article_id TEXT,
+      user_id TEXT,
+      reaction TEXT,
+      PRIMARY KEY (article_id, user_id),
+      FOREIGN KEY(article_id) REFERENCES articles(id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+  `);
 }
 
 module.exports = {
@@ -299,7 +310,7 @@ module.exports = {
     }
   },
 
-  async getArticleById(id) {
+  async getArticleById(id, userId = null) {
     if (dbType === 'sqlite') {
       const art = await getQuery("SELECT * FROM articles WHERE id = ?", [id]);
       if (!art) return null;
@@ -324,6 +335,18 @@ module.exports = {
         ORDER BY ec.id DESC
       `, [id]);
 
+      // Likes and Dislikes counts
+      const likesRow = await getQuery("SELECT COUNT(*) as count FROM article_reactions WHERE article_id = ? AND reaction = 'like'", [id]);
+      const dislikesRow = await getQuery("SELECT COUNT(*) as count FROM article_reactions WHERE article_id = ? AND reaction = 'dislike'", [id]);
+      const likes = likesRow ? likesRow.count : 0;
+      const dislikes = dislikesRow ? dislikesRow.count : 0;
+
+      let userReaction = null;
+      if (userId) {
+        const userReactionRow = await getQuery("SELECT reaction FROM article_reactions WHERE article_id = ? AND user_id = ?", [id, userId]);
+        userReaction = userReactionRow ? userReactionRow.reaction : null;
+      }
+
       const authorNames = journalists.map(j => j.username).join(', ') || 'Draft (Neatribuit)';
 
       return {
@@ -336,6 +359,9 @@ module.exports = {
         abstract: art.abstract,
         status: art.status,
         editorId: art.editor_id,
+        likes,
+        dislikes,
+        userReaction,
         author: {
           name: authorNames,
           title: 'Autori Articol',
@@ -385,8 +411,15 @@ module.exports = {
           .join(', ');
       }
 
+      const likes = (art.reactions || []).filter(r => r.reaction === 'like').length;
+      const dislikes = (art.reactions || []).filter(r => r.reaction === 'dislike').length;
+      const userReaction = userId ? ((art.reactions || []).find(r => r.userId === userId)?.reaction || null) : null;
+
       return {
         ...art,
+        likes,
+        dislikes,
+        userReaction,
         status: art.status || 'published',
         editorId: art.editorId || null,
         paragraphs: art.paragraphs || [],
@@ -691,6 +724,208 @@ module.exports = {
     }
   },
 
+  async setArticleReaction(articleId, userId, reaction) {
+    if (dbType === 'sqlite') {
+      if (!reaction) {
+        await runQuery("DELETE FROM article_reactions WHERE article_id = ? AND user_id = ?", [articleId, userId]);
+      } else {
+        const existing = await getQuery("SELECT reaction FROM article_reactions WHERE article_id = ? AND user_id = ?", [articleId, userId]);
+        if (existing && existing.reaction === reaction) {
+          await runQuery("DELETE FROM article_reactions WHERE article_id = ? AND user_id = ?", [articleId, userId]);
+        } else {
+          await runQuery("INSERT OR REPLACE INTO article_reactions (article_id, user_id, reaction) VALUES (?, ?, ?)", [articleId, userId, reaction]);
+        }
+      }
+    } else {
+      const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
+      const artIdx = data.findIndex(a => a.id === articleId);
+      if (artIdx !== -1) {
+        if (!data[artIdx].reactions) data[artIdx].reactions = [];
+        const existingIdx = data[artIdx].reactions.findIndex(r => r.userId === userId);
+        
+        if (!reaction) {
+          if (existingIdx !== -1) data[artIdx].reactions.splice(existingIdx, 1);
+        } else {
+          if (existingIdx !== -1) {
+            if (data[artIdx].reactions[existingIdx].reaction === reaction) {
+              data[artIdx].reactions.splice(existingIdx, 1);
+            } else {
+              data[artIdx].reactions[existingIdx].reaction = reaction;
+            }
+          } else {
+            data[artIdx].reactions.push({ userId, reaction });
+          }
+        }
+        fs.writeFileSync(jsonFilePath, JSON.stringify(data, null, 2), 'utf-8');
+      } else {
+        throw new Error('Article not found');
+      }
+    }
+  },
+
+  async reorderParagraphs(articleId, paragraphsList, indexMapping) {
+    if (dbType === 'sqlite') {
+      // 1. Delete all old paragraphs
+      await runQuery("DELETE FROM paragraphs WHERE article_id = ?", [articleId]);
+      
+      // 2. Insert new ones in order
+      for (let i = 0; i < paragraphsList.length; i++) {
+        await runQuery("INSERT INTO paragraphs (article_id, paragraph_text, idx) VALUES (?, ?, ?)", [articleId, paragraphsList[i], i]);
+      }
+      
+      // 3. Update comments indexMapping
+      const comments = await allQuery("SELECT id, paragraph_idx FROM editorial_comments WHERE article_id = ?", [articleId]);
+      for (const comment of comments) {
+        const oldIdx = comment.paragraph_idx;
+        const newIdx = indexMapping[oldIdx];
+        if (newIdx !== undefined && newIdx !== null) {
+          await runQuery("UPDATE editorial_comments SET paragraph_idx = ? WHERE id = ?", [newIdx, comment.id]);
+        }
+      }
+    } else {
+      const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
+      const artIdx = data.findIndex(a => a.id === articleId);
+      if (artIdx !== -1) {
+        // Update paragraphs list
+        data[artIdx].paragraphs = paragraphsList;
+        
+        // Update comments paragraphIdx
+        if (data[artIdx].editorialComments) {
+          data[artIdx].editorialComments = data[artIdx].editorialComments.map(c => {
+            const oldIdx = c.paragraphIdx;
+            const newIdx = indexMapping[oldIdx];
+            return {
+              ...c,
+              paragraphIdx: (newIdx !== undefined && newIdx !== null) ? newIdx : oldIdx
+            };
+          });
+        }
+        fs.writeFileSync(jsonFilePath, JSON.stringify(data, null, 2), 'utf-8');
+      } else {
+        throw new Error('Article not found');
+      }
+    }
+  },
+
+  async getAdminStats() {
+    if (dbType === 'sqlite') {
+      const totalArticlesRow = await getQuery("SELECT COUNT(*) as count FROM articles");
+      
+      const statusRows = await allQuery("SELECT status, COUNT(*) as count FROM articles GROUP BY status");
+      const categoryRows = await allQuery("SELECT category, COUNT(*) as count FROM articles GROUP BY category");
+      
+      const totalCommentsRow = await getQuery("SELECT COUNT(*) as count FROM editorial_comments");
+      const totalReviewsRow = await getQuery("SELECT COUNT(*) as count FROM reviews");
+      
+      const likesRow = await getQuery("SELECT COUNT(*) as count FROM article_reactions WHERE reaction = 'like'");
+      const dislikesRow = await getQuery("SELECT COUNT(*) as count FROM article_reactions WHERE reaction = 'dislike'");
+      
+      // Journalists assignments count
+      const journalistRows = await allQuery(`
+        SELECT u.username, COUNT(*) as count 
+        FROM article_journalists aj
+        JOIN users u ON aj.user_id = u.id
+        GROUP BY u.id
+        ORDER BY count DESC
+      `);
+
+      // Averages for published articles
+      const avgMetricsRow = await getQuery(`
+        SELECT 
+          AVG(metricsCoefficient) as avgCoefficient,
+          AVG(metricsSomatic) as avgSomatic,
+          AVG(metricsAcademicHeat) as avgAcademicHeat
+        FROM articles
+        WHERE status = 'published'
+      `);
+
+      return {
+        totalArticles: totalArticlesRow.count,
+        statusBreakdown: statusRows.reduce((acc, row) => ({ ...acc, [row.status]: row.count }), {}),
+        categoryBreakdown: categoryRows.reduce((acc, row) => ({ ...acc, [row.category]: row.count }), {}),
+        totalComments: totalCommentsRow.count,
+        totalReviews: totalReviewsRow.count,
+        totalLikes: likesRow.count,
+        totalDislikes: dislikesRow.count,
+        journalistRankings: journalistRows.map(row => ({ name: row.username, count: row.count })),
+        averages: {
+          coefficient: avgMetricsRow.avgCoefficient ? parseFloat(Number(avgMetricsRow.avgCoefficient).toFixed(2)) : 0,
+          somatic: avgMetricsRow.avgSomatic ? parseFloat(Number(avgMetricsRow.avgSomatic).toFixed(1)) : 0,
+          academicHeat: avgMetricsRow.avgAcademicHeat ? parseFloat(Number(avgMetricsRow.avgAcademicHeat).toFixed(1)) : 0
+        }
+      };
+    } else {
+      // JSON database fallback
+      const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
+      const users = JSON.parse(fs.readFileSync(usersJsonFilePath, 'utf-8'));
+
+      const totalArticles = data.length;
+      
+      const statusBreakdown = {};
+      const categoryBreakdown = {};
+      let totalComments = 0;
+      let totalReviews = 0;
+      let totalLikes = 0;
+      let totalDislikes = 0;
+
+      const journalistCounts = {};
+
+      let publishedCount = 0;
+      let sumCoefficient = 0;
+      let sumSomatic = 0;
+      let sumAcademicHeat = 0;
+
+      for (const art of data) {
+        const status = art.status || 'published';
+        statusBreakdown[status] = (statusBreakdown[status] || 0) + 1;
+        
+        const category = art.category || 'Draft';
+        categoryBreakdown[category] = (categoryBreakdown[category] || 0) + 1;
+
+        totalComments += (art.editorialComments || []).length;
+        totalReviews += (art.peerReviews || []).length;
+
+        const reactions = art.reactions || [];
+        totalLikes += reactions.filter(r => r.reaction === 'like').length;
+        totalDislikes += reactions.filter(r => r.reaction === 'dislike').length;
+
+        if (art.journalistIds) {
+          for (const jId of art.journalistIds) {
+            const username = users.find(u => u.id === jId)?.username || jId;
+            journalistCounts[username] = (journalistCounts[username] || 0) + 1;
+          }
+        }
+
+        if (status === 'published' && art.metrics) {
+          publishedCount++;
+          sumCoefficient += art.metrics.coefficient || 0;
+          sumSomatic += art.metrics.somatic || 0;
+          sumAcademicHeat += art.metrics.academicHeat || 0;
+        }
+      }
+
+      const journalistRankings = Object.entries(journalistCounts)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      return {
+        totalArticles,
+        statusBreakdown,
+        categoryBreakdown,
+        totalComments,
+        totalReviews,
+        totalLikes,
+        totalDislikes,
+        journalistRankings,
+        averages: {
+          coefficient: publishedCount ? parseFloat((sumCoefficient / publishedCount).toFixed(2)) : 0,
+          somatic: publishedCount ? parseFloat((sumSomatic / publishedCount).toFixed(1)) : 0,
+          academicHeat: publishedCount ? parseFloat((sumAcademicHeat / publishedCount).toFixed(1)) : 0
+        }
+      };
+    }
+  },
+
   async deleteArticle(id) {
     if (dbType === 'sqlite') {
       await runQuery("DELETE FROM paragraphs WHERE article_id = ?", [id]);
@@ -699,6 +934,7 @@ module.exports = {
       await runQuery("DELETE FROM article_journalists WHERE article_id = ?", [id]);
       await runQuery("DELETE FROM article_images WHERE article_id = ?", [id]);
       await runQuery("DELETE FROM editorial_comments WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM article_reactions WHERE article_id = ?", [id]);
       await runQuery("DELETE FROM articles WHERE id = ?", [id]);
       return { id };
     } else {

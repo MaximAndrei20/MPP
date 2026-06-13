@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Search, BookOpen, MessageSquare, LogOut, Plus, Send, CheckCircle, FileText, Image } from 'lucide-react';
+import { Search, BookOpen, MessageSquare, LogOut, Plus, Send, CheckCircle, FileText, Image, ThumbsUp, ThumbsDown, GripVertical } from 'lucide-react';
 
 function App() {
   const [articles, setArticles] = useState([]);
@@ -35,6 +35,11 @@ function App() {
   const [editorialComment, setEditorialComment] = useState("");
   const [activeCommentParagraphIdx, setActiveCommentParagraphIdx] = useState(null);
   const [viewingCommentsIdx, setViewingCommentsIdx] = useState(null);
+  
+  // Drag and drop paragraph reordering states
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+  const [showStats, setShowStats] = useState(false);
 
   // Review Form State (Normal User)
   const [reviewer, setReviewer] = useState("");
@@ -320,6 +325,63 @@ function App() {
         setActiveCommentParagraphIdx(null);
       })
       .catch(err => alert(err.message));
+   };
+
+  const handleDropReorder = (fromIdx, toIdx) => {
+    if (fromIdx === toIdx || !selectedArticle) return;
+
+    // 1. Calculate new paragraphs array
+    const newParagraphs = Array.from(selectedArticle.paragraphs);
+    const [removed] = newParagraphs.splice(fromIdx, 1);
+    newParagraphs.splice(toIdx, 0, removed);
+
+    // 2. Calculate indices mapping (oldIdx -> newIdx)
+    const indices = Array.from({ length: selectedArticle.paragraphs.length }, (_, i) => i);
+    const [removedIndex] = indices.splice(fromIdx, 1);
+    indices.splice(toIdx, 0, removedIndex);
+
+    const indexMapping = {};
+    indices.forEach((oldIdx, newIdx) => {
+      indexMapping[oldIdx] = newIdx;
+    });
+
+    // 3. Close comments popover & comments inputs (because indices shift)
+    setActiveCommentParagraphIdx(null);
+    setViewingCommentsIdx(null);
+
+    // 4. PUT request to server
+    fetch(`/api/articles/${selectedId}/paragraphs/reorder`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        username: currentUser.username,
+        paragraphs: newParagraphs,
+        indexMapping
+      })
+    })
+      .then(async res => {
+        let data;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          data = await res.json();
+        }
+        if (!res.ok) {
+          throw new Error((data && data.error) || `Eroare server (${res.status})`);
+        }
+        return data;
+      })
+      .then(data => {
+        if (data) {
+          setSelectedArticle(data);
+          fetchArticles();
+        }
+      })
+      .catch(err => {
+        console.error("Error reordering paragraphs:", err);
+        alert(err.message || "Reordonarea paragrafelor a eșuat.");
+      });
   };
 
   const handlePublish = () => {
@@ -333,6 +395,31 @@ function App() {
         if (!res.ok) throw new Error(data.error);
         fetchArticleDetails();
         fetchArticles();
+      })
+      .catch(err => alert(err.message));
+  };
+
+  const handleReact = (reactionType) => {
+    if (!currentUser || !selectedId) return;
+
+    fetch(`/api/articles/${selectedId}/react`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        userId: currentUser.id, 
+        reaction: reactionType 
+      })
+    })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        
+        setSelectedArticle(prev => prev ? {
+          ...prev,
+          likes: data.likes,
+          dislikes: data.dislikes,
+          userReaction: data.userReaction
+        } : null);
       })
       .catch(err => alert(err.message));
   };
@@ -485,6 +572,30 @@ function App() {
             <span className={`role-badge role-${currentUser.role}`}>
               {currentUser.role.toUpperCase()}
             </span>
+            {currentUser.role === 'admin' && (
+              <button 
+                onClick={() => setShowStats(!showStats)} 
+                className="stats-toggle-btn"
+                style={{
+                  backgroundColor: showStats ? 'var(--color-teal)' : 'var(--bg-tertiary)',
+                  color: showStats ? '#0b0f19' : 'var(--text-primary)',
+                  border: '1px solid var(--border-color)',
+                  padding: '0.3rem 0.6rem',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  fontWeight: 'bold',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  transition: 'all 0.2s ease',
+                  marginRight: '0.5rem'
+                }}
+              >
+                <FileText style={{ width: '14px', height: '14px' }} />
+                {showStats ? "Articole" : "Statistici"}
+              </button>
+            )}
             <button onClick={handleLogout} className="logout-btn">
               <LogOut style={{ width: '14px', height: '14px' }} />
               Ieși
@@ -520,9 +631,12 @@ function App() {
 
       {/* Main Content */}
       <main className="main-content">
-        
-        {/* Left column: Master List */}
-        <section className="master-list-panel">
+        {showStats && currentUser.role === 'admin' ? (
+          <AdminStatsDashboard currentUser={currentUser} />
+        ) : (
+          <>
+            {/* Left column: Master List */}
+            <section className="master-list-panel">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
             <h2 className="master-list-title">Articole publicate ({filteredArticles.length})</h2>
             {/* Show Add Button only for Editors */}
@@ -663,25 +777,62 @@ function App() {
                     const pComments = (selectedArticle.editorialComments || []).filter(c => c.paragraphIdx === idx);
                     const isCommented = pComments.length > 0;
                     const canComment = currentUser.role === 'editor' && selectedArticle.status !== 'published';
+                    const canDrag = currentUser.role === 'editor' && selectedArticle.editorId === currentUser.id && selectedArticle.status !== 'published';
 
                     return (
                       <div 
                         key={idx} 
                         className={`article-paragraph-wrapper ${isCommented ? 'has-comments' : ''}`}
+                        draggable={canDrag}
+                        onDragStart={(e) => {
+                          if (!canDrag) return;
+                          e.dataTransfer.setData("text/plain", idx.toString());
+                          setDraggedIndex(idx);
+                        }}
+                        onDragOver={(e) => {
+                          if (!canDrag) return;
+                          e.preventDefault();
+                          setDragOverIndex(idx);
+                        }}
+                        onDragLeave={() => {
+                          if (!canDrag) return;
+                          if (dragOverIndex === idx) setDragOverIndex(null);
+                        }}
+                        onDrop={(e) => {
+                          if (!canDrag) return;
+                          e.preventDefault();
+                          const fromIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                          if (!isNaN(fromIdx) && fromIdx !== idx) {
+                            handleDropReorder(fromIdx, idx);
+                          }
+                          setDraggedIndex(null);
+                          setDragOverIndex(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedIndex(null);
+                          setDragOverIndex(null);
+                        }}
                         style={{
                           position: 'relative',
                           padding: '0.8rem 1rem',
                           margin: '0.5rem -1rem',
                           borderRadius: '6px',
-                          backgroundColor: isCommented ? 'rgba(234, 179, 8, 0.05)' : 'transparent',
+                          backgroundColor: draggedIndex === idx 
+                            ? 'rgba(234, 179, 8, 0.1)' 
+                            : (dragOverIndex === idx && draggedIndex !== idx 
+                               ? 'rgba(234, 179, 8, 0.15)' 
+                               : (isCommented ? 'rgba(234, 179, 8, 0.05)' : 'transparent')),
                           borderLeft: isCommented ? '4px solid var(--color-yellow)' : '4px solid transparent',
+                          borderTop: (dragOverIndex === idx && draggedIndex !== idx) ? '2px solid var(--color-yellow)' : 'none',
+                          borderBottom: (dragOverIndex === idx && draggedIndex !== idx) ? '2px solid var(--color-yellow)' : 'none',
+                          opacity: draggedIndex === idx ? 0.5 : 1,
                           transition: 'all 0.2s ease',
-                          cursor: canComment ? 'pointer' : 'default',
+                          cursor: canDrag ? (draggedIndex === idx ? 'grabbing' : 'grab') : (canComment ? 'pointer' : 'default'),
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '0.4rem'
                         }}
-                        title={canComment ? "Apasă pentru a adăuga un comentariu editorial" : ""}
+                        title={canDrag ? "Trage pentru a reordona sau apasă pentru a adăuga un comentariu" : (canComment ? "Apasă pentru a adăuga un comentariu editorial" : "")}
                         onClick={() => {
                           if (canComment) {
                             setActiveCommentParagraphIdx(activeCommentParagraphIdx === idx ? null : idx);
@@ -690,6 +841,21 @@ function App() {
                         }}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%', gap: '1rem' }}>
+                          {canDrag && (
+                            <div 
+                              style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                color: 'var(--text-muted)', 
+                                paddingRight: '0.4rem',
+                                cursor: draggedIndex === idx ? 'grabbing' : 'grab'
+                              }}
+                              title="Trage pentru a reordona paragraful"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <GripVertical style={{ width: '16px', height: '16px' }} />
+                            </div>
+                          )}
                           <p style={{ margin: 0, flex: 1, lineHeight: '1.6' }}>{p}</p>
                           
                           {isCommented && (
@@ -848,6 +1014,62 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Like/Dislike reactions widget */}
+              <div 
+                className="reactions-container"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  marginTop: '1.5rem',
+                  paddingTop: '1rem',
+                  borderTop: '1px solid var(--border-color)'
+                }}
+              >
+                <button 
+                  onClick={() => handleReact('like')} 
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '16px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: selectedArticle.userReaction === 'like' ? 'rgba(20, 184, 166, 0.15)' : 'var(--bg-card)',
+                    color: selectedArticle.userReaction === 'like' ? 'var(--color-teal)' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    fontWeight: 'bold',
+                    transition: 'all 0.2s ease'
+                  }}
+                  title="Apreciază articolul"
+                >
+                  <ThumbsUp style={{ width: '14px', height: '14px' }} />
+                  <span>Susține ({selectedArticle.likes || 0})</span>
+                </button>
+                <button 
+                  onClick={() => handleReact('dislike')} 
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '16px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: selectedArticle.userReaction === 'dislike' ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg-card)',
+                    color: selectedArticle.userReaction === 'dislike' ? 'var(--color-red)' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    fontWeight: 'bold',
+                    transition: 'all 0.2s ease'
+                  }}
+                  title="Dezapreciază articolul"
+                >
+                  <ThumbsDown style={{ width: '14px', height: '14px' }} />
+                  <span>Contestă ({selectedArticle.dislikes || 0})</span>
+                </button>
+              </div>
 
               {/* Abstract & Metrics (Only if published) */}
               {selectedArticle.status === 'published' ? (
@@ -1014,8 +1236,267 @@ function App() {
             </div>
           )}
         </section>
-
+          </>
+        )}
       </main>
+    </div>
+  );
+}
+
+function AdminStatsDashboard({ currentUser }) {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/admin/stats?username=${currentUser.username}`)
+      .then(res => {
+        if (!res.ok) {
+          return res.json().then(err => { throw new Error(err.error || "Failed to fetch stats"); });
+        }
+        return res.json();
+      })
+      .then(data => {
+        setStats(data);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setError(err.message);
+        setLoading(false);
+      });
+  }, [currentUser]);
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: '1rem', width: '100%' }}>
+        <div className="placeholder-icon animate-pulse" style={{ color: 'var(--color-teal)' }}>[ Se încarcă datele... ]</div>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Se preiau statisticile agregate din baza de date...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: '1rem', width: '100%', color: 'rgba(239, 68, 68, 0.8)' }}>
+        <p>Eroare: {error}</p>
+      </div>
+    );
+  }
+
+  const {
+    totalArticles,
+    statusBreakdown,
+    categoryBreakdown,
+    totalComments,
+    totalReviews,
+    totalLikes,
+    totalDislikes,
+    journalistRankings,
+    averages
+  } = stats;
+
+  return (
+    <div className="stats-dashboard" style={{ padding: '2rem', width: '100%', overflowY: 'auto', height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      
+      {/* Title */}
+      <div>
+        <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.8rem', color: '#fff', marginBottom: '0.3rem' }}>Panou de Control Statistici</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Vizualizare în timp real a datelor agregate din jurnalul Epidermis.</p>
+      </div>
+
+      {/* Grid of Key Metric Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+        
+        {/* Total Articles Card */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'rgba(20, 184, 166, 0.1)', color: 'var(--color-teal)', padding: '0.75rem', borderRadius: '50%' }}>
+            <BookOpen style={{ width: '24px', height: '24px' }} />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 'bold' }}>Total Articole</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#fff', marginTop: '0.2rem' }}>{totalArticles}</div>
+          </div>
+        </div>
+
+        {/* Total Comments Card */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'var(--color-yellow)', padding: '0.75rem', borderRadius: '50%' }}>
+            <MessageSquare style={{ width: '24px', height: '24px' }} />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 'bold' }}>Comentarii Editoriale</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#fff', marginTop: '0.2rem' }}>{totalComments}</div>
+          </div>
+        </div>
+
+        {/* Total Reviews Card */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', padding: '0.75rem', borderRadius: '50%' }}>
+            <CheckCircle style={{ width: '24px', height: '24px' }} />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 'bold' }}>Recenzii Peer-Review</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#fff', marginTop: '0.2rem' }}>{totalReviews}</div>
+          </div>
+        </div>
+
+        {/* Likes / Dislikes Ratio Card */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+          <div style={{ backgroundColor: 'rgba(20, 184, 166, 0.05)', color: 'var(--color-teal)', padding: '0.75rem', borderRadius: '50%', display: 'flex', gap: '0.2rem' }}>
+            <ThumbsUp style={{ width: '16px', height: '16px' }} />
+            <ThumbsDown style={{ width: '16px', height: '16px', color: '#ef4444' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 'bold' }}>Reacții Cititori</div>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'baseline', marginTop: '0.2rem' }}>
+              <span style={{ fontSize: '1.4rem', fontWeight: 'bold', color: 'var(--color-teal)' }}>+{totalLikes}</span>
+              <span style={{ fontSize: '1.1rem', color: '#ef4444' }}>-{totalDislikes}</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      {/* Breakdown Panels Row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '1.5rem' }}>
+        
+        {/* Status Breakdown Panel */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem', display: 'flex', justifyContent: 'space-between' }}>
+            <span>Distribuție pe Stări</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Progres Drafturi</span>
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+            {['started', 'pending', 'finalized', 'published'].map(status => {
+              const count = statusBreakdown[status] || 0;
+              const percentage = totalArticles > 0 ? ((count / totalArticles) * 100).toFixed(0) : 0;
+              
+              let barColor = 'var(--text-muted)';
+              let label = status.toUpperCase();
+              if (status === 'started') { barColor = '#64748b'; label = 'Draft (started)'; }
+              else if (status === 'pending') { barColor = '#3b82f6'; label = 'În lucru (pending)'; }
+              else if (status === 'finalized') { barColor = 'var(--color-yellow)'; label = 'Finalizat (finalized)'; }
+              else if (status === 'published') { barColor = 'var(--color-teal)'; label = 'Publicat (published)'; }
+
+              return (
+                <div key={status} style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                    <span style={{ fontWeight: '500' }}>{label}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{count} ({percentage}%)</span>
+                  </div>
+                  <div style={{ width: '100%', height: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ width: `${percentage}%`, height: '100%', backgroundColor: barColor, borderRadius: '4px', transition: 'width 0.6s ease' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Category Breakdown Panel */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem', display: 'flex', justifyContent: 'space-between' }}>
+            <span>Domenii științifice</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Categorii active</span>
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+            {["Thermodynamics", "Philosophy", "Economics", "Psychology", "Draft"].map(cat => {
+              const count = categoryBreakdown[cat] || 0;
+              const percentage = totalArticles > 0 ? ((count / totalArticles) * 100).toFixed(0) : 0;
+              
+              let barColor = 'var(--color-accent)';
+              if (cat === 'Draft') barColor = 'var(--text-muted)';
+
+              return (
+                <div key={cat} style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                    <span style={{ fontWeight: '500' }}>{cat}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{count} ({percentage}%)</span>
+                  </div>
+                  <div style={{ width: '100%', height: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ width: `${percentage}%`, height: '100%', backgroundColor: barColor, borderRadius: '4px', transition: 'width 0.6s ease' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+      </div>
+
+      {/* Rankings and Academic Metrics Row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '1.5rem' }}>
+        
+        {/* Journalist Ranking Panel */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+            Clasament Jurnaliști (Activitate)
+          </h3>
+          {journalistRankings.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '1.5rem' }}>
+              Niciun jurnalist cu articole alocate în sistem.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+                    <th style={{ textAlign: 'left', padding: '0.5rem' }}>Jurnalist</th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>Articole Alocate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {journalistRankings.map((ranking, index) => (
+                    <tr key={ranking.name} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                      <td style={{ padding: '0.6rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', backgroundColor: index === 0 ? 'var(--color-yellow)' : 'var(--bg-primary)', color: index === 0 ? '#0b0f19' : 'var(--text-secondary)', borderRadius: '50%', width: '20px', height: '20px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                          {index + 1}
+                        </span>
+                        <strong>{ranking.name}</strong>
+                      </td>
+                      <td style={{ padding: '0.6rem 0.5rem', textAlign: 'right', fontWeight: 'bold', color: 'var(--color-teal)' }}>
+                        {ranking.count}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Academic Metrics averages */}
+        <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          <h3 style={{ fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+            Medii Performanță Academică (Articole Publicate)
+          </h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', height: '100%', alignItems: 'center', padding: '0.5rem 0' }}>
+            
+            {/* Somatic Intensity avg */}
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--color-teal)' }}>{averages.somatic}%</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Intensitate Somatică</div>
+            </div>
+
+            {/* Academic Heat avg */}
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--color-yellow)' }}>{averages.academicHeat}</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Căldură Academică</div>
+            </div>
+
+            {/* Coefficient avg */}
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#fff' }}>{averages.coefficient}</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Coeficient</div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+
     </div>
   );
 }

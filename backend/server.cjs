@@ -56,7 +56,7 @@ app.get('/api/articles', async (req, res) => {
 app.get('/api/articles/:id', async (req, res) => {
   try {
     const { userId, role } = req.query;
-    const article = await db.getArticleById(req.params.id);
+    const article = await db.getArticleById(req.params.id, userId);
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
@@ -236,6 +236,47 @@ app.post('/api/articles/:id/paragraphs', async (req, res) => {
   }
 });
 
+app.put('/api/articles/:id/paragraphs/reorder', async (req, res) => {
+  const { username, paragraphs, indexMapping } = req.body;
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required' });
+  }
+  if (!paragraphs || !Array.isArray(paragraphs)) {
+    return res.status(400).json({ error: 'Paragraphs array is required' });
+  }
+  if (!indexMapping || typeof indexMapping !== 'object') {
+    return res.status(400).json({ error: 'Index mapping object is required' });
+  }
+
+  try {
+    const user = await db.getUserByUsername(username);
+    if (!user || user.role !== 'editor') {
+      return res.status(403).json({ error: 'Doar editorii pot reordona paragrafele' });
+    }
+
+    const article = await db.getArticleById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    if (article.editorId !== user.id) {
+      return res.status(403).json({ error: 'Nu ai permisiunea de a modifica acest articol' });
+    }
+
+    if (article.status === 'published') {
+      return res.status(400).json({ error: 'Articolele publicate nu mai pot fi reordonate' });
+    }
+
+    await db.reorderParagraphs(req.params.id, paragraphs, indexMapping);
+    
+    const updated = await db.getArticleById(req.params.id, user.id);
+    res.json(updated);
+  } catch (error) {
+    console.error('Error reordering paragraphs:', error);
+    res.status(500).json({ error: 'Failed to reorder paragraphs' });
+  }
+});
+
 app.post('/api/articles/:id/images', async (req, res) => {
   const { placeholderText, imageData, username } = req.body;
   if ((!placeholderText || !placeholderText.trim()) && !imageData) {
@@ -351,6 +392,52 @@ app.post('/api/articles/:id/comments', async (req, res) => {
   } catch (error) {
     console.error('Error adding editorial comment:', error);
     res.status(500).json({ error: 'Failed to add editorial comment' });
+  }
+});
+
+app.post('/api/articles/:id/react', async (req, res) => {
+  const { userId, reaction } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  try {
+    const article = await db.getArticleById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    await db.setArticleReaction(req.params.id, userId, reaction || null);
+    
+    const updated = await db.getArticleById(req.params.id, userId);
+    res.json({
+      likes: updated.likes,
+      dislikes: updated.dislikes,
+      userReaction: updated.userReaction
+    });
+  } catch (error) {
+    console.error('Error handling reaction:', error);
+    res.status(500).json({ error: 'Failed to update reaction' });
+  }
+});
+
+app.get('/api/admin/stats', async (req, res) => {
+  const { username } = req.query;
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required' });
+  }
+
+  try {
+    const user = await db.getUserByUsername(username);
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Doar utilizatorii cu rolul de Administrator pot accesa statisticile' });
+    }
+
+    const stats = await db.getAdminStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching admin stats:', error);
+    res.status(500).json({ error: 'Failed to fetch admin statistics' });
   }
 });
 

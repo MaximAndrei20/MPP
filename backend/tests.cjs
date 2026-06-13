@@ -170,4 +170,136 @@ test('Database & Collaboration Test Suite', async (t) => {
     await db.deleteArticle(articleId);
   });
 
+  await t.test('6. Likes & Dislikes Reactions', async () => {
+    const editor = await db.getUserByUsername('editor');
+    const articleId = 'test-art-reactions-777';
+    const title = 'Test Article Reactions';
+    const userA = 'u-userA';
+    const userB = 'u-userB';
+
+    // Create article
+    await db.createArticle(articleId, title, editor.id);
+
+    // Assert initial counts
+    let details = await db.getArticleById(articleId);
+    assert.strictEqual(details.likes, 0, 'Initial likes should be 0');
+    assert.strictEqual(details.dislikes, 0, 'Initial dislikes should be 0');
+    assert.strictEqual(details.userReaction, null, 'Initial userReaction should be null');
+
+    // User A likes the article
+    await db.setArticleReaction(articleId, userA, 'like');
+    details = await db.getArticleById(articleId, userA);
+    assert.strictEqual(details.likes, 1, 'Likes should be 1 after User A likes');
+    assert.strictEqual(details.dislikes, 0, 'Dislikes should be 0');
+    assert.strictEqual(details.userReaction, 'like', 'User A reaction should be like');
+
+    // Fetch with User B (should have userReaction = null)
+    details = await db.getArticleById(articleId, userB);
+    assert.strictEqual(details.likes, 1, 'Likes count remains 1');
+    assert.strictEqual(details.userReaction, null, 'User B has not voted yet');
+
+    // User B dislikes the article
+    await db.setArticleReaction(articleId, userB, 'dislike');
+    details = await db.getArticleById(articleId, userA);
+    assert.strictEqual(details.likes, 1, 'Likes count is 1');
+    assert.strictEqual(details.dislikes, 1, 'Dislikes count is 1 after User B dislikes');
+
+    // User A likes again (toggle off)
+    await db.setArticleReaction(articleId, userA, 'like');
+    details = await db.getArticleById(articleId, userA);
+    assert.strictEqual(details.likes, 0, 'Likes count becomes 0 after toggle');
+    assert.strictEqual(details.dislikes, 1, 'Dislikes count remains 1');
+    assert.strictEqual(details.userReaction, null, 'User A reaction is reset to null');
+
+    // Clean up
+    await db.deleteArticle(articleId);
+  });
+
+  await t.test('7. Paragraph Reordering and Comment Mapping', async () => {
+    const editor = await db.getUserByUsername('editor');
+    const articleId = 'test-art-reorder-999';
+    const title = 'Test Article Reordering';
+
+    // 1. Create article
+    await db.createArticle(articleId, title, editor.id);
+
+    // 2. Add 3 paragraphs
+    await db.addArticleParagraph(articleId, 'Paragraph 0');
+    await db.addArticleParagraph(articleId, 'Paragraph 1');
+    await db.addArticleParagraph(articleId, 'Paragraph 2');
+
+    // 3. Add comment to Paragraph 1
+    const comment1 = await db.addEditorialComment(articleId, editor.id, 'Comment on Paragraph 1', 1);
+    // Add comment to Paragraph 2
+    const comment2 = await db.addEditorialComment(articleId, editor.id, 'Comment on Paragraph 2', 2);
+
+    // Verify initial structure
+    let details = await db.getArticleById(articleId);
+    assert.strictEqual(details.paragraphs.length, 3);
+    assert.strictEqual(details.paragraphs[0], 'Paragraph 0');
+    assert.strictEqual(details.paragraphs[1], 'Paragraph 1');
+    assert.strictEqual(details.paragraphs[2], 'Paragraph 2');
+
+    // Find comments in initial state
+    let c1 = details.editorialComments.find(c => c.id === comment1.id);
+    let c2 = details.editorialComments.find(c => c.id === comment2.id);
+    assert.strictEqual(c1.paragraphIdx, 1);
+    assert.strictEqual(c2.paragraphIdx, 2);
+
+    // 4. Reorder: move Paragraph 0 to index 1 (swapping Paragraph 0 and 1, so: [Paragraph 1, Paragraph 0, Paragraph 2])
+    // Old indices: [0, 1, 2] -> New indices: [1, 0, 2]
+    // Paragraph 0 (old index 0) goes to 1 -> indexMapping[0] = 1
+    // Paragraph 1 (old index 1) goes to 0 -> indexMapping[1] = 0
+    // Paragraph 2 (old index 2) goes to 2 -> indexMapping[2] = 2
+    const newParagraphs = ['Paragraph 1', 'Paragraph 0', 'Paragraph 2'];
+    const indexMapping = { '0': 1, '1': 0, '2': 2 };
+
+    await db.reorderParagraphs(articleId, newParagraphs, indexMapping);
+
+    // 5. Verify reordered paragraphs and comment indices
+    details = await db.getArticleById(articleId);
+    assert.strictEqual(details.paragraphs.length, 3);
+    assert.strictEqual(details.paragraphs[0], 'Paragraph 1');
+    assert.strictEqual(details.paragraphs[1], 'Paragraph 0');
+    assert.strictEqual(details.paragraphs[2], 'Paragraph 2');
+
+    // Verify comments mapped correctly
+    c1 = details.editorialComments.find(c => c.id === comment1.id);
+    c2 = details.editorialComments.find(c => c.id === comment2.id);
+    assert.strictEqual(c1.paragraphIdx, 0, 'Comment 1 should now point to Paragraph 1 at index 0');
+    assert.strictEqual(c2.paragraphIdx, 2, 'Comment 2 should still point to Paragraph 2 at index 2');
+
+    // Clean up
+    await db.deleteArticle(articleId);
+  });
+
+  await t.test('8. Admin Statistics Dashboard aggregation', async () => {
+    // 1. Get initial stats
+    const initialStats = await db.getAdminStats();
+    
+    // 2. Create a test article and add reviews, comments, and reactions
+    const editor = await db.getUserByUsername('editor');
+    const articleId = 'test-stats-art-111';
+    const title = 'Test Stats Article';
+    
+    await db.createArticle(articleId, title, editor.id);
+    
+    // Add comment
+    await db.addEditorialComment(articleId, editor.id, 'Feedback comments', 0);
+    
+    // Add reaction
+    await db.setArticleReaction(articleId, 'u-userX', 'like');
+    
+    // 3. Fetch stats after additions
+    const newStats = await db.getAdminStats();
+    
+    // 4. Assert totals have increased by exactly 1
+    assert.strictEqual(newStats.totalArticles, initialStats.totalArticles + 1, 'Total articles should increase by 1');
+    assert.strictEqual(newStats.totalComments, initialStats.totalComments + 1, 'Total comments should increase by 1');
+    assert.strictEqual(newStats.totalLikes, initialStats.totalLikes + 1, 'Total likes should increase by 1');
+    
+    // 5. Clean up
+    await db.deleteArticle(articleId);
+  });
+
 });
