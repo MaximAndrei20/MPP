@@ -29,6 +29,7 @@ function App() {
   // Edit states for Journalists
   const [newParagraph, setNewParagraph] = useState("");
   const [newImagePlaceholder, setNewImagePlaceholder] = useState("");
+  const [uploadedImageBase64, setUploadedImageBase64] = useState("");
 
   // Comment state for Editors
   const [editorialComment, setEditorialComment] = useState("");
@@ -46,7 +47,12 @@ function App() {
   }, [currentUser]);
 
   const fetchArticles = () => {
-    fetch('/api/articles')
+    if (!currentUser) return;
+    const query = new URLSearchParams({
+      userId: currentUser.id,
+      role: currentUser.role
+    }).toString();
+    fetch(`/api/articles?${query}`)
       .then(res => res.json())
       .then(data => {
         setArticles(data);
@@ -65,7 +71,12 @@ function App() {
   }, [selectedId, currentUser]);
 
   const fetchArticleDetails = () => {
-    fetch(`/api/articles/${selectedId}`)
+    if (!currentUser || !selectedId) return;
+    const query = new URLSearchParams({
+      userId: currentUser.id,
+      role: currentUser.role
+    }).toString();
+    fetch(`/api/articles/${selectedId}?${query}`)
       .then(res => res.json())
       .then(data => {
         setSelectedArticle(data);
@@ -109,7 +120,7 @@ function App() {
         return data;
       })
       .then(data => {
-        const userSession = { username: data.username, role: data.role };
+        const userSession = { id: data.id, username: data.username, role: data.role };
         setCurrentUser(userSession);
         localStorage.setItem('currentUser', JSON.stringify(userSession));
         
@@ -129,19 +140,26 @@ function App() {
   };
 
   // Filter articles based on roles:
-  // - Readers see only published.
-  // - Editors/Admins see all.
-  // - Journalists see published + pending/finalized where they are authors.
+  // - Readers (User normal) see all published articles.
+  // - Editors see ONLY articles they created (involved).
+  // - Journalists see ONLY articles they are assigned to (involved).
+  // - Admins see all articles (so they can manage/delete).
   const filteredArticles = useMemo(() => {
     if (!currentUser) return [];
 
     return articles.filter(article => {
-      const isAuthor = article.author.name.toLowerCase().includes(currentUser.username.toLowerCase());
-      const isVisibleForRole = 
-        currentUser.role === 'admin' || 
-        currentUser.role === 'editor' || 
-        article.status === 'published' || 
-        (currentUser.role === 'journalist' && isAuthor);
+      let isVisibleForRole = false;
+
+      if (currentUser.role === 'admin') {
+        isVisibleForRole = true;
+      } else if (currentUser.role === 'editor') {
+        isVisibleForRole = article.editorId === currentUser.id;
+      } else if (currentUser.role === 'journalist') {
+        const isAssigned = article.author.name.toLowerCase().includes(currentUser.username.toLowerCase());
+        isVisibleForRole = isAssigned;
+      } else {
+        isVisibleForRole = article.status === 'published';
+      }
 
       if (!isVisibleForRole) return false;
 
@@ -220,20 +238,44 @@ function App() {
       .catch(err => alert(err.message));
   };
 
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) {
+      setUploadedImageBase64("");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setUploadedImageBase64(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleAddImagePlaceholder = (e) => {
     e.preventDefault();
-    if (!newImagePlaceholder.trim()) return;
+    if (!newImagePlaceholder.trim() && !uploadedImageBase64) {
+      alert("Trebuie să introduci o descriere sau să selectezi o imagine.");
+      return;
+    }
+
+    const form = e.target;
 
     fetch(`/api/articles/${selectedId}/images`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ placeholderText: newImagePlaceholder, username: currentUser.username })
+      body: JSON.stringify({ 
+        placeholderText: newImagePlaceholder, 
+        imageData: uploadedImageBase64 || null,
+        username: currentUser.username 
+      })
     })
       .then(async res => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         fetchArticleDetails();
         setNewImagePlaceholder("");
+        setUploadedImageBase64("");
+        form.reset();
       })
       .catch(err => alert(err.message));
   };
@@ -309,6 +351,34 @@ function App() {
         setComment("");
       })
       .catch(err => console.error(err));
+  };
+
+  const handleDeleteArticle = () => {
+    if (!window.confirm(`Ești sigur că vrei să ștergi articolul "${selectedArticle.title}" definitiv? Această acțiune este ireversibilă.`)) {
+      return;
+    }
+
+    fetch(`/api/articles/${selectedId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: currentUser.username })
+    })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        
+        setArticles(prev => {
+          const updated = prev.filter(a => a.id !== selectedId);
+          if (updated.length > 0) {
+            setSelectedId(updated[0].id);
+          } else {
+            setSelectedId(null);
+            setSelectedArticle(null);
+          }
+          return updated;
+        });
+      })
+      .catch(err => alert(err.message));
   };
 
   // RENDER LOGIN / REGISTER SCREEN
@@ -557,7 +627,18 @@ function App() {
                 <div className="detail-breadcrumbs">
                   Domeniu: {selectedArticle.category} &raquo; {selectedArticle.subCategory}
                 </div>
-                <h2 className="detail-title">{selectedArticle.title}</h2>
+                <h2 className="detail-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                  {selectedArticle.title}
+                  {currentUser.role === 'admin' && (
+                    <button 
+                      onClick={handleDeleteArticle} 
+                      className="delete-article-btn"
+                      title="Șterge Articolul definitiv"
+                    >
+                      Șterge Articol
+                    </button>
+                  )}
+                </h2>
                 <div className="detail-meta-text">
                   Publicat de: <strong>{selectedArticle.author.name}</strong> pe data de {selectedArticle.date} &bull; {selectedArticle.readingTime}
                 </div>
@@ -582,15 +663,32 @@ function App() {
 
               {/* Show bottom images if added by journalists */}
               {selectedArticle.articleImages && selectedArticle.articleImages.length > 0 && (
-                <div className="journalist-bottom-images">
+                <div className="journalist-bottom-images" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
                   <h3>Imagini adăugate de jurnaliști</h3>
-                  <div className="bottom-images-grid">
-                    {selectedArticle.articleImages.map((imgText, idx) => (
-                      <div key={idx} className="bottom-image-placeholder">
-                        <Image style={{ width: '24px', height: '24px', color: 'var(--color-teal)' }} />
-                        <span>{imgText}</span>
-                      </div>
-                    ))}
+                  <div className="bottom-images-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+                    {selectedArticle.articleImages.map((img, idx) => {
+                      const isObj = typeof img === 'object' && img !== null;
+                      const caption = isObj ? img.placeholder : img;
+                      const data = isObj ? img.data : null;
+
+                      return (
+                        <div key={idx} className="bottom-image-card" style={{ border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden', backgroundColor: 'var(--bg-card)', display: 'flex', flexDirection: 'column' }}>
+                          {data ? (
+                            <img src={data} alt={caption} style={{ width: '100%', height: '140px', objectFit: 'cover' }} />
+                          ) : (
+                            <div className="bottom-image-placeholder" style={{ height: '140px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-sidebar)', color: 'var(--text-secondary)', padding: '1rem', textAlign: 'center', gap: '0.5rem' }}>
+                              <Image style={{ width: '32px', height: '32px', color: 'var(--color-teal)' }} />
+                              <span style={{ fontSize: '0.8rem' }}>[Placeholder Legat]</span>
+                            </div>
+                          )}
+                          {caption && (
+                            <div className="bottom-image-caption" style={{ padding: '0.6rem', fontSize: '0.85rem', color: 'var(--text-primary)', borderTop: '1px solid var(--border-color)', backgroundColor: 'var(--bg-sidebar)' }}>
+                              {caption}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -679,16 +777,30 @@ function App() {
                   {/* Add Image Form */}
                   <form onSubmit={handleAddImagePlaceholder} className="collaboration-sub-form">
                     <div className="form-group">
-                      <label>Adaugă imagine placeholder (Descriere):</label>
+                      <label>Încarcă imagine de pe calculator:</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleFileChange}
+                        className="form-input"
+                        style={{ padding: '0.4rem' }}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Legendă / Descriere imagine:</label>
                       <input
                         type="text"
-                        required
                         placeholder="Ex: Grafic corelație efort fizic vs intelectual..."
                         value={newImagePlaceholder}
                         onChange={e => setNewImagePlaceholder(e.target.value)}
                         className="form-input"
                       />
                     </div>
+                    {uploadedImageBase64 && (
+                      <div className="image-upload-preview" style={{ margin: '0.5rem 0', padding: '0.5rem', border: '1px dashed var(--border-color)', borderRadius: '4px', textAlign: 'center' }}>
+                        <img src={uploadedImageBase64} alt="Preview" style={{ maxHeight: '100px', maxWidth: '100%', borderRadius: '4px' }} />
+                      </div>
+                    )}
                     <button type="submit" className="submit-btn" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                       <Image style={{ width: '14px', height: '14px' }} /> Adaugă Imagine
                     </button>

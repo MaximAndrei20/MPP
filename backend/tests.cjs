@@ -108,7 +108,7 @@ test('Database & Collaboration Test Suite', async (t) => {
     await db.addArticleImage(articleId, 'CSS image representing perspiration test');
     const detailsWithImg = await db.getArticleById(articleId);
     assert.strictEqual(detailsWithImg.articleImages.length, 1);
-    assert.strictEqual(detailsWithImg.articleImages[0], 'CSS image representing perspiration test');
+    assert.strictEqual(detailsWithImg.articleImages[0].placeholder, 'CSS image representing perspiration test');
 
     // 4.6 Add editorial comment
     await db.addEditorialComment(articleId, editor.id, 'Good draft, please write more.');
@@ -125,6 +125,48 @@ test('Database & Collaboration Test Suite', async (t) => {
     await db.publishArticle(articleId);
     const published = await db.getArticleById(articleId);
     assert.strictEqual(published.status, 'published');
+
+    // 4.9 Delete article
+    await db.deleteArticle(articleId);
+    const deleted = await db.getArticleById(articleId);
+    assert.strictEqual(deleted, null, 'Deleted article should be purged from database');
+  });
+
+  await t.test('5. Visibility Info & Journalist Image Uploads', async () => {
+    const editor = await db.getUserByUsername('editor');
+    const journalists = await db.getJournalists();
+    const journalist1 = journalists[0];
+
+    const articleId = 'test-art-visibility-555';
+    const title = 'Test Article Visibility and Uploads';
+
+    // Create article
+    await db.createArticle(articleId, title, editor.id);
+    
+    // Assign journalist
+    await db.assignJournalists(articleId, [journalist1.id]);
+
+    // Check that getArticles returns assignedJournalistIds
+    const allArticles = await db.getArticles();
+    const found = allArticles.find(a => a.id === articleId);
+    assert.ok(found, 'Created article should be in getArticles list');
+    assert.ok(Array.isArray(found.assignedJournalistIds), 'assignedJournalistIds should be an array');
+    assert.ok(found.assignedJournalistIds.includes(journalist1.id), 'Should contain assigned journalist ID');
+    assert.strictEqual(found.editorId, editor.id, 'Should contain correct editorId');
+
+    // Test adding image with base64 data
+    const fakeBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    await db.addArticleImage(articleId, 'Grafic Transpiratie', fakeBase64);
+
+    // Get article details and assert image content
+    const details = await db.getArticleById(articleId);
+    assert.ok(details, 'Article should exist');
+    assert.strictEqual(details.articleImages.length, 1, 'Should have one image');
+    assert.strictEqual(details.articleImages[0].placeholder, 'Grafic Transpiratie', 'Caption should match');
+    assert.strictEqual(details.articleImages[0].data, fakeBase64, 'Base64 image data should match');
+
+    // Clean up
+    await db.deleteArticle(articleId);
   });
 
 });

@@ -8,7 +8,7 @@ const app = express();
 const PORT = 5000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 function getLocalIpAddress() {
   const interfaces = os.networkInterfaces();
@@ -25,8 +25,28 @@ function getLocalIpAddress() {
 
 app.get('/api/articles', async (req, res) => {
   try {
+    const { userId, role } = req.query;
     const articles = await db.getArticles();
-    res.json(articles);
+
+    if (!role) {
+      // If no role/user is provided, return only published articles (public view)
+      const filtered = articles.filter(a => a.status === 'published');
+      return res.json(filtered);
+    }
+
+    let filtered = [];
+    if (role === 'admin') {
+      filtered = articles;
+    } else if (role === 'editor') {
+      filtered = articles.filter(a => a.editorId === userId);
+    } else if (role === 'journalist') {
+      filtered = articles.filter(a => a.assignedJournalistIds && a.assignedJournalistIds.includes(userId));
+    } else {
+      // normal user
+      filtered = articles.filter(a => a.status === 'published');
+    }
+
+    res.json(filtered);
   } catch (error) {
     console.error('Error fetching articles:', error);
     res.status(500).json({ error: 'Failed to fetch articles' });
@@ -35,10 +55,30 @@ app.get('/api/articles', async (req, res) => {
 
 app.get('/api/articles/:id', async (req, res) => {
   try {
+    const { userId, role } = req.query;
     const article = await db.getArticleById(req.params.id);
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
+
+    // Enforce visibility restriction
+    if (role === 'admin') {
+      // Admin sees all
+    } else if (role === 'editor') {
+      if (article.editorId !== userId) {
+        return res.status(403).json({ error: 'Nu ai permisiunea să vizualizezi acest articol' });
+      }
+    } else if (role === 'journalist') {
+      if (!article.assignedJournalistIds || !article.assignedJournalistIds.includes(userId)) {
+        return res.status(403).json({ error: 'Nu ai permisiunea să vizualizezi acest articol' });
+      }
+    } else {
+      // Normal user / public
+      if (article.status !== 'published') {
+        return res.status(403).json({ error: 'Nu ai permisiunea să vizualizezi acest articol' });
+      }
+    }
+
     res.json(article);
   } catch (error) {
     console.error('Error fetching article detail:', error);
@@ -109,6 +149,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     res.json({
+      id: user.id,
       username: user.username,
       role: user.role
     });
@@ -196,9 +237,9 @@ app.post('/api/articles/:id/paragraphs', async (req, res) => {
 });
 
 app.post('/api/articles/:id/images', async (req, res) => {
-  const { placeholderText, username } = req.body;
-  if (!placeholderText || !placeholderText.trim()) {
-    return res.status(400).json({ error: 'Image placeholder text is required' });
+  const { placeholderText, imageData, username } = req.body;
+  if ((!placeholderText || !placeholderText.trim()) && !imageData) {
+    return res.status(400).json({ error: 'Trebuie să introduci o descriere sau să încarci o imagine' });
   }
 
   try {
@@ -220,10 +261,11 @@ app.post('/api/articles/:id/images', async (req, res) => {
       return res.status(403).json({ error: 'Nu ești asignat ca jurnalist la acest articol' });
     }
 
-    const img = await db.addArticleImage(req.params.id, placeholderText.trim());
+    const caption = placeholderText ? placeholderText.trim() : 'Imagine adăugată de jurnalist';
+    const img = await db.addArticleImage(req.params.id, caption, imageData || null);
     res.status(201).json(img);
   } catch (error) {
-    console.error('Error adding image placeholder:', error);
+    console.error('Error adding image:', error);
     res.status(500).json({ error: 'Failed to add image' });
   }
 });
@@ -268,6 +310,10 @@ app.post('/api/articles/:id/publish', async (req, res) => {
       return res.status(404).json({ error: 'Article not found' });
     }
 
+    if (article.editorId !== user.id) {
+      return res.status(403).json({ error: 'Nu ești autorizat să publici acest articol' });
+    }
+
     const updated = await db.publishArticle(req.params.id);
     res.json(updated);
   } catch (error) {
@@ -293,11 +339,40 @@ app.post('/api/articles/:id/comments', async (req, res) => {
       return res.status(404).json({ error: 'Article not found' });
     }
 
+    if (article.editorId !== user.id) {
+      return res.status(403).json({ error: 'Nu ești autorizat să comentezi la acest articol' });
+    }
+
     const comment = await db.addEditorialComment(req.params.id, user.id, commentText.trim());
     res.status(201).json(comment);
   } catch (error) {
     console.error('Error adding editorial comment:', error);
     res.status(500).json({ error: 'Failed to add editorial comment' });
+  }
+});
+
+app.delete('/api/articles/:id', async (req, res) => {
+  const { username } = req.body;
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required' });
+  }
+
+  try {
+    const user = await db.getUserByUsername(username);
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Doar utilizatorii cu rolul de Administrator pot șterge articole' });
+    }
+
+    const article = await db.getArticleById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    await db.deleteArticle(req.params.id);
+    res.json({ message: 'Article deleted successfully', id: req.params.id });
+  } catch (error) {
+    console.error('Error deleting article:', error);
+    res.status(500).json({ error: 'Failed to delete article' });
   }
 });
 

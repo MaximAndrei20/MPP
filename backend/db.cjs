@@ -135,9 +135,14 @@ async function initSqliteSchema() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       article_id TEXT,
       placeholder_text TEXT,
+      image_data TEXT,
       FOREIGN KEY(article_id) REFERENCES articles(id)
     )
   `);
+
+  try {
+    await runQuery("ALTER TABLE article_images ADD COLUMN image_data TEXT");
+  } catch (e) { /* already exists */ }
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS editorial_comments (
@@ -230,7 +235,8 @@ module.exports = {
     if (dbType === 'sqlite') {
       const rows = await allQuery(`
         SELECT a.id, a.title, a.category, a.subCategory, a.date, a.readingTime, a.abstract, a.status, a.editor_id,
-               GROUP_CONCAT(u.username, ', ') as assignedJournalists
+               GROUP_CONCAT(u.username, ', ') as assignedJournalists,
+               GROUP_CONCAT(u.id, ', ') as assignedJournalistIds
         FROM articles a
         LEFT JOIN article_journalists aj ON a.id = aj.article_id
         LEFT JOIN users u ON aj.user_id = u.id
@@ -246,6 +252,7 @@ module.exports = {
         abstract: row.abstract,
         status: row.status,
         editorId: row.editor_id,
+        assignedJournalistIds: row.assignedJournalistIds ? row.assignedJournalistIds.split(', ') : [],
         author: {
           name: row.assignedJournalists || 'Draft (Neatribuit)',
           title: 'Autori Articol',
@@ -275,6 +282,7 @@ module.exports = {
           abstract: art.abstract,
           status: art.status || 'published',
           editorId: art.editorId || null,
+          assignedJournalistIds: art.journalistIds || [],
           author: {
             name: authorNames,
             title: 'Autori Articol',
@@ -294,7 +302,7 @@ module.exports = {
       const paragraphs = await allQuery("SELECT paragraph_text FROM paragraphs WHERE article_id = ? ORDER BY idx", [id]);
       const citations = await allQuery("SELECT citation_text FROM citations WHERE article_id = ? ORDER BY idx", [id]);
       const reviews = await allQuery("SELECT * FROM reviews WHERE article_id = ? ORDER BY date DESC", [id]);
-      const images = await allQuery("SELECT placeholder_text FROM article_images WHERE article_id = ?", [id]);
+      const images = await allQuery("SELECT placeholder_text, image_data FROM article_images WHERE article_id = ?", [id]);
       
       const journalists = await allQuery(`
         SELECT u.id, u.username 
@@ -345,7 +353,10 @@ module.exports = {
           sentiment: r.sentiment,
           comment: r.comment
         })),
-        articleImages: images.map(img => img.placeholder_text),
+        articleImages: images.map(img => ({
+          placeholder: img.placeholder_text,
+          data: img.image_data
+        })),
         editorialComments: comments.map(c => ({
           id: c.id,
           editorId: c.editor_id,
@@ -375,7 +386,18 @@ module.exports = {
         paragraphs: art.paragraphs || [],
         citations: art.citations || [],
         peerReviews: art.peerReviews || [],
-        articleImages: art.articleImages || [],
+        articleImages: (art.articleImages || []).map(img => {
+          if (typeof img === 'object' && img !== null) {
+            return {
+              placeholder: img.placeholder || img.placeholderText || '',
+              data: img.data || img.imageData || null
+            };
+          }
+          return {
+            placeholder: img,
+            data: null
+          };
+        }),
         editorialComments: art.editorialComments || [],
         assignedJournalistIds: art.journalistIds || [],
         author: {
@@ -540,18 +562,21 @@ module.exports = {
     }
   },
 
-  async addArticleImage(articleId, placeholderText) {
+  async addArticleImage(articleId, placeholderText, imageData = null) {
     if (dbType === 'sqlite') {
-      await runQuery("INSERT INTO article_images (article_id, placeholder_text) VALUES (?, ?)", [articleId, placeholderText]);
-      return { articleId, placeholderText };
+      await runQuery("INSERT INTO article_images (article_id, placeholder_text, image_data) VALUES (?, ?, ?)", [articleId, placeholderText, imageData]);
+      return { articleId, placeholderText, imageData };
     } else {
       const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
       const artIdx = data.findIndex(a => a.id === articleId);
       if (artIdx !== -1) {
         if (!data[artIdx].articleImages) data[artIdx].articleImages = [];
-        data[artIdx].articleImages.push(placeholderText);
+        data[artIdx].articleImages.push({
+          placeholder: placeholderText,
+          data: imageData
+        });
         fs.writeFileSync(jsonFilePath, JSON.stringify(data, null, 2), 'utf-8');
-        return { articleId, placeholderText };
+        return { articleId, placeholderText, imageData };
       }
       throw new Error('Article not found');
     }
@@ -648,6 +673,24 @@ module.exports = {
         return newComment;
       }
       throw new Error('Article not found');
+    }
+  },
+
+  async deleteArticle(id) {
+    if (dbType === 'sqlite') {
+      await runQuery("DELETE FROM paragraphs WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM citations WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM reviews WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM article_journalists WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM article_images WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM editorial_comments WHERE article_id = ?", [id]);
+      await runQuery("DELETE FROM articles WHERE id = ?", [id]);
+      return { id };
+    } else {
+      const data = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
+      const filtered = data.filter(art => art.id !== id);
+      fs.writeFileSync(jsonFilePath, JSON.stringify(filtered, null, 2), 'utf-8');
+      return { id };
     }
   }
 };

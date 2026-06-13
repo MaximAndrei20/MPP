@@ -883,3 +883,20 @@ body {
   color: var(--text-secondary);
 }
 
+.delete-article-btn {
+  background-color: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  font-weight: bold;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.2s;
+  font-family: var(--font-sans);
+}
+
+.delete-article-btn:hover {
+  opacity: 0.9;
+}
+
