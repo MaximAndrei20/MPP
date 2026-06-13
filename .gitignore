@@ -1,0 +1,51 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Production build artifacts
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+
+# SQLite Database files (runtime state)
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+**/database.sqlite
+**/database.sqlite-journal
+
+# Local fallback JSON database
+**/database.json
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+**/.env*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDEs and Editors
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
