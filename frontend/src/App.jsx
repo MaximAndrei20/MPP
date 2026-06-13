@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Search, BookOpen, MessageSquare, Plus } from 'lucide-react';
+import { Search, BookOpen, MessageSquare, LogOut, ShieldAlert } from 'lucide-react';
 
 function App() {
   const [articles, setArticles] = useState([]);
@@ -8,14 +8,27 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
 
-  // Form State for new Review
+  // Auth State
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = localStorage.getItem('currentUser');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("user");
+  const [authError, setAuthError] = useState("");
+
+  // Review Form State
   const [reviewer, setReviewer] = useState("");
   const [comment, setComment] = useState("");
 
   const categories = ["All", "Thermodynamics", "Philosophy", "Economics", "Psychology"];
 
-  // 1. Fetch all articles summary on component mount
+  // 1. Fetch all articles on mount (if user is logged in)
   useEffect(() => {
+    if (!currentUser) return;
+
     fetch('/api/articles')
       .then(res => res.json())
       .then(data => {
@@ -24,12 +37,12 @@ function App() {
           setSelectedId(data[0].id);
         }
       })
-      .catch(err => console.error("Error loading articles from backend:", err));
-  }, []);
+      .catch(err => console.error("Error loading articles:", err));
+  }, [currentUser]);
 
-  // 2. Fetch specific article details when selectedId changes
+  // 2. Fetch specific article details on selection
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId || !currentUser) return;
 
     fetch(`/api/articles/${selectedId}`)
       .then(res => res.json())
@@ -37,7 +50,57 @@ function App() {
         setSelectedArticle(data);
       })
       .catch(err => console.error("Error loading article details:", err));
-  }, [selectedId]);
+  }, [selectedId, currentUser]);
+
+  // Handle Login/Register form submission
+  const handleAuthSubmit = (e) => {
+    e.preventDefault();
+    setAuthError("");
+
+    if (!username.trim() || !password.trim()) {
+      setAuthError("Numele și parola sunt obligatorii");
+      return;
+    }
+
+    const endpoint = isLoginMode ? '/api/login' : '/api/register';
+    const body = isLoginMode 
+      ? { username, password } 
+      : { username, password, role };
+
+    fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Autentificare eșuată");
+        }
+        return data;
+      })
+      .then(data => {
+        // For register, we automatically log in the user using the response
+        const userSession = { username: data.username, role: data.role };
+        setCurrentUser(userSession);
+        localStorage.setItem('currentUser', JSON.stringify(userSession));
+        
+        // Reset form
+        setUsername("");
+        setPassword("");
+        setRole("user");
+      })
+      .catch(err => {
+        setAuthError(err.message);
+      });
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('currentUser');
+    setSelectedArticle(null);
+    setArticles([]);
+  };
 
   // Real-time local filtering of the list
   const filteredArticles = useMemo(() => {
@@ -63,29 +126,116 @@ function App() {
     })
       .then(res => res.json())
       .then(savedReview => {
-        // Update selected article's reviews locally in-state
         setSelectedArticle(prev => ({
           ...prev,
           peerReviews: [savedReview, ...prev.peerReviews]
         }));
-        // Reset inputs
         setReviewer("");
         setComment("");
       })
-      .catch(err => console.error("Error submitting review to backend:", err));
+      .catch(err => console.error("Error submitting review:", err));
   };
 
+  // RENDER LOGIN / REGISTER SCREEN
+  if (!currentUser) {
+    return (
+      <div className="auth-container">
+        <div className="auth-card">
+          <div className="auth-header">
+            <h1 className="logo-main">Epidermis</h1>
+            <p className="logo-sub">Teoria Transpirației — Autentificare</p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="auth-form">
+            <h2>{isLoginMode ? "Conectare Cont" : "Înregistrare Cont Nou"}</h2>
+            
+            {authError && <div className="auth-error-msg">{authError}</div>}
+
+            <div className="form-group">
+              <label htmlFor="auth-username">Nume Utilizator</label>
+              <input 
+                id="auth-username"
+                type="text" 
+                required
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="Introdu numele..."
+                className="form-input"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="auth-password">Parolă</label>
+              <input 
+                id="auth-password"
+                type="password" 
+                required
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Introdu parola..."
+                className="form-input"
+              />
+            </div>
+
+            {!isLoginMode && (
+              <div className="form-group">
+                <label htmlFor="auth-role">Rol Utilizator</label>
+                <select 
+                  id="auth-role"
+                  value={role}
+                  onChange={e => setRole(e.target.value)}
+                  className="form-select"
+                >
+                  <option value="user">User Normal (Verde)</option>
+                  <option value="journalist">Journalist (Albastru)</option>
+                  <option value="editor">Editor (Galben)</option>
+                </select>
+              </div>
+            )}
+
+            <button type="submit" className="submit-btn" style={{ width: '100%', marginTop: '0.5rem' }}>
+              {isLoginMode ? "Conectare" : "Înregistrare"}
+            </button>
+          </form>
+
+          <div className="auth-toggle">
+            {isLoginMode ? (
+              <p>Nu ai cont? <button onClick={() => { setIsLoginMode(false); setAuthError(""); }}>Înregistrează-te</button></p>
+            ) : (
+              <p>Ai deja cont? <button onClick={() => { setIsLoginMode(true); setAuthError(""); }}>Conectează-te</button></p>
+            )}
+          </div>
+          
+          <div style={{ marginTop: '1.5rem', padding: '0.75rem', backgroundColor: 'var(--bg-primary)', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            <strong>Cont Admin Hardcodat:</strong><br />
+            Username: <code style={{ color: 'var(--color-accent)' }}>admin</code> | Parolă: <code style={{ color: 'var(--color-accent)' }}>admin</code>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // RENDER MAIN APPLICATION SCREEN
   return (
     <div className="app-container">
-      {/* Simplistic Header */}
+      {/* Header */}
       <header className="journal-header">
         <div className="header-top">
           <div className="journal-logo">
             <h1 className="logo-main">Epidermis</h1>
             <p className="logo-sub">Teoria Transpirației — Jurnal Online</p>
           </div>
-          <div className="journal-metadata">
-            <div className="metadata-item">Mod Conexiune: <span>Server Activ (SQLite/JSON)</span></div>
+
+          {/* User & Role Badge Indicator */}
+          <div className="user-profile-badge">
+            <span>Utilizator: <strong>{currentUser.username}</strong></span>
+            <span className={`role-badge role-${currentUser.role}`}>
+              {currentUser.role.toUpperCase()}
+            </span>
+            <button onClick={handleLogout} className="logout-btn" title="Deconectare">
+              <LogOut style={{ width: '14px', height: '14px' }} />
+              Ieși
+            </button>
           </div>
         </div>
 
@@ -163,7 +313,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Simplistic CSS Image Placeholder */}
+              {/* CSS Image Placeholder */}
               <div className="image-placeholder">
                 <div className="placeholder-icon">[ Imagine Placeholder ]</div>
                 <div className="placeholder-text">Reprezentare conceptuală: {selectedArticle.title}</div>
@@ -181,7 +331,7 @@ function App() {
                 ))}
               </div>
 
-              {/* Simplistic Sweat Metrics */}
+              {/* Metrics */}
               <div className="simplified-metrics">
                 <h3>Parametrii Articolului</h3>
                 <ul>
@@ -220,7 +370,7 @@ function App() {
                   ))}
                 </div>
 
-                {/* Simplified Submit Review Form */}
+                {/* Submit Review Form */}
                 <form onSubmit={handleAddReview} className="add-review-form">
                   <h4>Adaugă evaluare academică</h4>
                   <div className="form-group">

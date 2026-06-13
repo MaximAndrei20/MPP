@@ -98,6 +98,15 @@ async function initSqliteSchema() {
       FOREIGN KEY(article_id) REFERENCES articles(id)
     )
   `);
+
+  await runQuery(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE,
+      password TEXT,
+      role TEXT
+    )
+  `);
 }
 
 module.exports = {
@@ -106,6 +115,16 @@ module.exports = {
   async init(initialArticles) {
     if (dbType === 'sqlite') {
       await initSqliteSchema();
+      
+      // Seed admin user
+      const userRow = await getQuery("SELECT COUNT(*) as count FROM users WHERE username = 'admin'");
+      if (userRow.count === 0) {
+        console.log('Seeding hardcoded admin user into SQLite...');
+        const adminId = 'u-' + Date.now();
+        await runQuery(`
+          INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)
+        `, [adminId, 'admin', 'admin', 'admin']);
+      }
       
       const row = await getQuery("SELECT COUNT(*) as count FROM articles");
       if (row.count === 0) {
@@ -150,6 +169,14 @@ module.exports = {
       if (!fs.existsSync(jsonFilePath)) {
         console.log('Populating JSON database with initial data...');
         fs.writeFileSync(jsonFilePath, JSON.stringify(initialArticles, null, 2), 'utf-8');
+      }
+      const usersJsonFilePath = path.join(__dirname, 'users.json');
+      if (!fs.existsSync(usersJsonFilePath)) {
+        console.log('Seeding hardcoded admin user into JSON database...');
+        const initialUsers = [
+          { id: 'u-admin', username: 'admin', password: 'admin', role: 'admin' }
+        ];
+        fs.writeFileSync(usersJsonFilePath, JSON.stringify(initialUsers, null, 2), 'utf-8');
       }
     }
   },
@@ -255,6 +282,38 @@ module.exports = {
         return review;
       }
       throw new Error('Article not found');
+    }
+  },
+
+  async getUserByUsername(username) {
+    if (dbType === 'sqlite') {
+      const user = await getQuery("SELECT * FROM users WHERE username = ?", [username]);
+      return user || null;
+    } else {
+      const usersJsonFilePath = path.join(__dirname, 'users.json');
+      if (!fs.existsSync(usersJsonFilePath)) return null;
+      const users = JSON.parse(fs.readFileSync(usersJsonFilePath, 'utf-8'));
+      return users.find(u => u.username === username) || null;
+    }
+  },
+
+  async createUser(username, password, role) {
+    const id = 'u-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
+    if (dbType === 'sqlite') {
+      await runQuery(`
+        INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)
+      `, [id, username, password, role]);
+      return { id, username, role };
+    } else {
+      const usersJsonFilePath = path.join(__dirname, 'users.json');
+      let users = [];
+      if (fs.existsSync(usersJsonFilePath)) {
+        users = JSON.parse(fs.readFileSync(usersJsonFilePath, 'utf-8'));
+      }
+      const newUser = { id, username, password, role };
+      users.push(newUser);
+      fs.writeFileSync(usersJsonFilePath, JSON.stringify(users, null, 2), 'utf-8');
+      return { id, username, role };
     }
   }
 };

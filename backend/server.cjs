@@ -71,6 +71,53 @@ app.post('/api/articles/:id/reviews', async (req, res) => {
   }
 });
 
+app.post('/api/register', async (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) {
+    return res.status(400).json({ error: 'Username, password and role are required' });
+  }
+
+  const allowedRoles = ["user", "journalist", "editor"];
+  if (!allowedRoles.includes(role)) {
+    return res.status(400).json({ error: 'Invalid role selection' });
+  }
+
+  try {
+    const existingUser = await db.getUserByUsername(username);
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username is already taken' });
+    }
+
+    const newUser = await db.createUser(username, password, role);
+    res.status(201).json(newUser);
+  } catch (error) {
+    console.error('Error in register:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
+
+  try {
+    const user = await db.getUserByUsername(username);
+    if (!user || user.password !== password) {
+      return res.status(400).json({ error: 'Invalid username or password' });
+    }
+
+    res.json({
+      username: user.username,
+      role: user.role
+    });
+  } catch (error) {
+    console.error('Error in login:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
 async function startServer() {
   try {
     const initialArticles = generateServerArticles();
