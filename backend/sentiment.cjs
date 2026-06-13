@@ -1,53 +1,81 @@
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
-// Local Lexicon Dictionary for fallback
-// Contains common positive and negative words in English and Romanian
-const positiveWords = new Set([
-  // Romanian
-  'bun', 'bine', 'excelent', 'grozav', 'recomand', 'interesant', 'util', 'clar', 'deosebit',
-  'placut', 'frumos', 'ador', 'perfect', 'bravo', 'corect', 'multumesc', 'da', 'ok', 'pozitiv',
-  'super',
-  // English
-  'good', 'well', 'excellent', 'great', 'awesome', 'recommend', 'interesting', 'useful', 'clear',
-  'nice', 'love', 'perfect', 'correct', 'thanks', 'thank', 'yes', 'positive'
-]);
+// Load Naive Bayes weights
+let model = null;
+try {
+  const weightsPath = path.join(__dirname, 'sentiment_weights.json');
+  if (fs.existsSync(weightsPath)) {
+    model = JSON.parse(fs.readFileSync(weightsPath, 'utf-8'));
+  }
+} catch (e) {
+  console.error('Failed to load sentiment_weights.json:', e);
+}
 
-const negativeWords = new Set([
-  // Romanian
-  'rau', 'prost', 'slab', 'gresit', 'incorect', 'inutil', 'neclar', 'urat', 'dezamagit', 'eroare',
-  'problema', 'lipseste', 'sarcasm', 'nu', 'deloc', 'greseala', 'critic', 'negativ', 'dificil',
-  // English
-  'bad', 'poor', 'wrong', 'incorrect', 'useless', 'unclear', 'ugly', 'disappointed', 'error',
-  'problem', 'missing', 'no', 'not', 'mistake', 'critical', 'negative', 'difficult'
-]);
+function tokenize(text) {
+  return text.toLowerCase()
+    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "")
+    .split(/\s+/)
+    .filter(w => w.length > 1);
+}
 
 function localAnalyze(text) {
-  if (!text) return { score: 0, label: 'neutral' };
+  if (!model) {
+    console.warn("Sentiment weights model not loaded. Returning neutral.");
+    return { score: 0, label: 'neutral' };
+  }
+
+  const tokens = tokenize(text || "");
+  if (tokens.length === 0 || !tokens.some(t => model.vocab[t])) {
+    return { score: 0.0, label: 'neutral' };
+  }
+  const classes = ["positive", "negative", "neutral"];
   
-  const words = text.toLowerCase()
-    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "")
-    .split(/\s+/);
-  
-  let scoreSum = 0;
-  let wordCount = 0;
-  
-  words.forEach(word => {
-    if (positiveWords.has(word)) {
-      scoreSum += 1;
-      wordCount++;
-    } else if (negativeWords.has(word)) {
-      scoreSum -= 1;
-      wordCount++;
+  // Calculate log likelihood for each class
+  const logLikelihoods = {};
+  classes.forEach(c => {
+    logLikelihoods[c] = model.priors[c];
+    tokens.forEach(token => {
+      if (model.vocab[token]) {
+        logLikelihoods[c] += model.vocab[token][c];
+      } else {
+        logLikelihoods[c] += model.defaultProbs[c];
+      }
+    });
+  });
+
+  // Find class with maximum log probability
+  let bestClass = "neutral";
+  let maxLogProb = -Infinity;
+  classes.forEach(c => {
+    if (logLikelihoods[c] > maxLogProb) {
+      maxLogProb = logLikelihoods[c];
+      bestClass = c;
     }
   });
+
+  // Calculate score between -1.0 and 1.0
+  // Score = P(positive) - P(negative) using softmax/exp normalize
+  // Subtracting maxLogProb to avoid overflow during exponentiation (log-sum-exp trick)
+  const shift = Math.max(logLikelihoods.positive, logLikelihoods.negative, logLikelihoods.neutral);
+  const expPos = Math.exp(logLikelihoods.positive - shift);
+  const expNeg = Math.exp(logLikelihoods.negative - shift);
+  const expNeu = Math.exp(logLikelihoods.neutral - shift);
+  const sumExp = expPos + expNeg + expNeu;
   
-  const score = wordCount > 0 ? parseFloat((scoreSum / wordCount).toFixed(2)) : 0.0;
+  const probPos = expPos / sumExp;
+  const probNeg = expNeg / sumExp;
   
-  let label = 'neutral';
-  if (score > 0.2) label = 'positive';
-  else if (score < -0.2) label = 'negative';
+  let score = parseFloat((probPos - probNeg).toFixed(2));
+  if (bestClass === 'neutral') {
+    score = 0.0;
+  }
   
-  return { score, label };
+  return {
+    score,
+    label: bestClass
+  };
 }
 
 function googleAnalyze(text, apiKey) {
@@ -111,7 +139,7 @@ async function analyzeSentiment(text) {
       return localAnalyze(text);
     }
   } else {
-    console.log('No Google Cloud NLP key configured, using local lexicon analysis...');
+    console.log('No Google Cloud NLP key configured, using local Naive Bayes analysis...');
     return localAnalyze(text);
   }
 }
